@@ -1,21 +1,21 @@
+import asyncio
+import base64
 import os
+import tempfile
+import uuid
+
+import requests
+import torch
 from fastapi import (
     FastAPI,
-    Header,
     HTTPException,
-    Body,
-    BackgroundTasks,
     Request,
 )
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
-import torch
 from transformers import pipeline
-from .diarization_pipeline import diarize
-import requests
-import asyncio
-import uuid
 
+from .diarization_pipeline import diarize
+from .schema import TranscribeRequest, WebhookBody
 
 admin_key = os.environ.get(
     "ADMIN_KEY",
@@ -43,15 +43,10 @@ loop = asyncio.get_event_loop()
 running_tasks = {}
 
 
-class WebhookBody(BaseModel):
-    url: str
-    header: dict[str, str] = {}
-
-
 def process(
     url: str,
     task: str,
-    language: str,
+    language: str | None,
     batch_size: int,
     timestamp: str,
     diarise_audio: bool,
@@ -63,7 +58,7 @@ def process(
     try:
         generate_kwargs = {
             "task": task,
-            "language": None if language == "None" else language,
+            "language": language,
         }
 
         outputs = pipe(
@@ -123,75 +118,63 @@ async def admin_key_auth_check(request: Request, call_next):
 
 
 @app.post("/")
-def root(
-    url: str = Body(),
-    task: str = Body(default="transcribe", enum=["transcribe", "translate"]),
-    language: str = Body(default="None"),
-    batch_size: int = Body(default=64),
-    timestamp: str = Body(default="chunk", enum=["chunk", "word"]),
-    diarise_audio: bool = Body(
-        default=False,
-    ),
-    webhook: WebhookBody | None = None,
-    is_async: bool = Body(default=False),
-    managed_task_id: str | None = Body(default=None),
-):
-    if url.lower().startswith("http") is False:
-        raise HTTPException(status_code=400, detail="Invalid URL")
-
-    if diarise_audio is True and hf_token is None:
+def root(request: TranscribeRequest):
+    if request.diarise_audio is True and hf_token is None:
         raise HTTPException(status_code=500, detail="Missing Hugging Face Token")
 
-    if is_async is True and webhook is None:
+    if request.is_async is True and request.webhook is None:
         raise HTTPException(
             status_code=400, detail="Webhook is required for async tasks"
         )
 
-    task_id = managed_task_id if managed_task_id is not None else str(uuid.uuid4())
+    task_id = request.managed_task_id if request.managed_task_id is not None else str(uuid.uuid4())
 
     try:
-        resp = {}
-        if is_async is True:
-            backgroundTask = asyncio.ensure_future(
-                loop.run_in_executor(
-                    None,
-                    process,
+        with tempfile.NamedTemporaryFile(delete=True) as fp:
+            audio_data = base64.b64decode(request.audio)
+            fp.write(audio_data)
+            url = fp.name
+            if request.is_async is True:
+                backgroundTask = asyncio.ensure_future(
+                    loop.run_in_executor(
+                        None,
+                        process,
+                        url,
+                        request.task,
+                        request.language,
+                        request.batch_size,
+                        request.timestamp,
+                        request.diarise_audio,
+                        request.webhook,
+                        task_id,
+                    )
+                )
+                running_tasks[task_id] = backgroundTask
+                resp = {
+                    "detail": "Task is being processed in the background",
+                    "status": "processing",
+                    "task_id": task_id,
+                }
+            else:
+                running_tasks[task_id] = None
+                outputs = process(
                     url,
-                    task,
-                    language,
-                    batch_size,
-                    timestamp,
-                    diarise_audio,
-                    webhook,
+                    request.task,
+                    request.language,
+                    request.batch_size,
+                    request.timestamp,
+                    request.diarise_audio,
+                    request.webhook,
                     task_id,
                 )
-            )
-            running_tasks[task_id] = backgroundTask
-            resp = {
-                "detail": "Task is being processed in the background",
-                "status": "processing",
-                "task_id": task_id,
-            }
-        else:
-            running_tasks[task_id] = None
-            outputs = process(
-                url,
-                task,
-                language,
-                batch_size,
-                timestamp,
-                diarise_audio,
-                webhook,
-                task_id,
-            )
-            resp = {
-                "output": outputs,
-                "status": "completed",
-                "task_id": task_id,
-            }
-        if fly_machine_id is not None:
-            resp["fly_machine_id"] = fly_machine_id
-        return resp
+                resp = {
+                    "output": outputs,
+                    "status": "completed",
+                    "task_id": task_id,
+                }
+            if fly_machine_id is not None:
+                resp["fly_machine_id"] = fly_machine_id
+            return resp
     except Exception as e:
         print(e)
         raise HTTPException(status_code=500, detail=str(e))

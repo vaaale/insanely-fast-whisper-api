@@ -20,8 +20,9 @@ COPY poetry.lock pyproject.toml ./
 
 RUN poetry config virtualenvs.in-project true
 RUN poetry install --no-root
+RUN pip install flash-attn --no-build-isolation
 
-COPY . .
+COPY app/ /app/app
 
 RUN poetry install
 RUN $POETRY_VENV/bin/pip install -U wheel \
