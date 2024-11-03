@@ -3,6 +3,7 @@ import base64
 import os
 import tempfile
 import uuid
+import logging
 
 import requests
 import torch
@@ -12,10 +13,17 @@ from fastapi import (
     Request,
 )
 from fastapi.responses import JSONResponse
-from transformers import pipeline
-
+from transformers import pipeline, WhisperFeatureExtractor, WhisperTokenizerFast, WhisperForConditionalGeneration
 from .diarization_pipeline import diarize
 from .schema import TranscribeRequest, WebhookBody
+
+logging.basicConfig(level=logging.DEBUG,
+                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+                    handlers=[
+                        logging.FileHandler("whisper.log"),
+                        logging.StreamHandler()
+                    ])
+logger = logging.getLogger(__name__)
 
 admin_key = os.environ.get(
     "ADMIN_KEY",
@@ -30,13 +38,50 @@ fly_machine_id = os.environ.get(
     "FLY_MACHINE_ID",
 )
 
+local_files_only = False
+model_id = os.environ.get("MODEL_ID", "openai/whisper-large-v3")
+
+device = "cuda:0" if torch.cuda.is_available() else "cpu"
+device_count = torch.cuda.device_count()
+logger.info(f'available devices: {device_count}')
+for i in range(device_count):
+    logger.info(torch.cuda.get_device_name(device=f"cuda:{i}"))
+logger.info(f'current device: {torch.cuda.current_device()}')
+
+torch_dtype = torch.float16
+logger.info(f"Using device: {device}")
+logger.info("Loading model...")
+model = WhisperForConditionalGeneration.from_pretrained(
+    model_id,
+    torch_dtype=torch_dtype,
+    local_files_only=local_files_only,
+).to(device)
+logger.info("Loading tokenizer...")
+tokenizer = WhisperTokenizerFast.from_pretrained(
+    model_id, local_files_only=local_files_only
+)
+logger.info("Loading features extractor...")
+feature_extractor = WhisperFeatureExtractor.from_pretrained(
+    model_id, local_files_only=local_files_only
+)
+
 pipe = pipeline(
     "automatic-speech-recognition",
-    model="openai/whisper-large-v3",
-    torch_dtype=torch.float16,
-    device="cuda:0",
-    model_kwargs=({"attn_implementation": "flash_attention_2"}),
+    model=model,
+    tokenizer=tokenizer,
+    feature_extractor=feature_extractor,
+    model_kwargs={"use_flash_attention_2": True},
+    torch_dtype=torch_dtype,
+    device=device,
 )
+
+# pipe = pipeline(
+#     "automatic-speech-recognition",
+#     model="openai/whisper-large-v3",
+#     torch_dtype=torch.float16,
+#     device="cuda:0",
+#     model_kwargs=({"attn_implementation": "flash_attention_2"}),
+# )
 
 app = FastAPI()
 loop = asyncio.get_event_loop()
@@ -49,7 +94,7 @@ def process(
     language: str | None,
     batch_size: int,
     timestamp: str,
-    diarise_audio: bool,
+    diarize_audio: bool,
     webhook: WebhookBody | None = None,
     task_id: str | None = None,
 ):
@@ -69,7 +114,7 @@ def process(
             return_timestamps="word" if timestamp == "word" else True,
         )
 
-        if diarise_audio is True:
+        if diarize_audio is True:
             speakers_transcript = diarize(
                 hf_token,
                 url,
@@ -119,7 +164,7 @@ async def admin_key_auth_check(request: Request, call_next):
 
 @app.post("/")
 def root(request: TranscribeRequest):
-    if request.diarise_audio is True and hf_token is None:
+    if request.diarize_audio is True and hf_token is None:
         raise HTTPException(status_code=500, detail="Missing Hugging Face Token")
 
     if request.is_async is True and request.webhook is None:
@@ -144,7 +189,7 @@ def root(request: TranscribeRequest):
                         request.language,
                         request.batch_size,
                         request.timestamp,
-                        request.diarise_audio,
+                        request.diarize_audio,
                         request.webhook,
                         task_id,
                     )
@@ -163,7 +208,7 @@ def root(request: TranscribeRequest):
                     request.language,
                     request.batch_size,
                     request.timestamp,
-                    request.diarise_audio,
+                    request.diarize_audio,
                     request.webhook,
                     task_id,
                 )
@@ -176,7 +221,7 @@ def root(request: TranscribeRequest):
                 resp["fly_machine_id"] = fly_machine_id
             return resp
     except Exception as e:
-        print(e)
+        logger.info(e)
         raise HTTPException(status_code=500, detail=str(e))
 
 

@@ -14,7 +14,7 @@ class TranscribeRequest(BaseModel):
     language: str | None = None
     batch_size: int = 64
     timestamp: Literal["chunk", "word"] = "chunk"
-    diarise_audio: bool = True
+    diarize_audio: bool = True
     webhook: WebhookBody | None = None
     is_async: bool = False
     managed_task_id: str | None = None
