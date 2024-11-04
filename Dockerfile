@@ -23,6 +23,7 @@ RUN poetry install --no-root
 RUN pip install flash-attn --no-build-isolation
 
 COPY app/ /app/app
+COPY static/ /app/static
 
 RUN poetry install
 RUN $POETRY_VENV/bin/pip install -U wheel \

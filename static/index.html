@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Whisper Translation Service Test</title>
+    <!-- Bootstrap CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body>
+<div class="container mt-5">
+    <h1 class="mb-4">Whisper Translation Service Test</h1>
+    <form id="translationForm">
+        <div class="mb-3">
+            <label for="audioFile" class="form-label">Audio File</label>
+            <input class="form-control" type="file" id="audioFile" accept="audio/*" required>
+        </div>
+        <div class="mb-3">
+            <label for="task" class="form-label">Task</label>
+            <select class="form-select" id="task" required>
+                <option value="transcribe">Transcribe</option>
+                <option value="translate">Translate</option>
+            </select>
+        </div>
+        <div class="mb-3">
+            <label for="language" class="form-label">Language</label>
+            <select class="form-select" id="language" required>
+                <option value="no">Norwegian (no)</option>
+                <option value="nn">Norwegian Nynorsk (nn)</option>
+                <option value="en">English (en)</option>
+                <option value="de">German (de)</option>
+                <option value="es">Spanish (es)</option>
+            </select>
+        </div>
+        <div class="mb-3">
+            <label for="timestamp" class="form-label">Timestamp</label>
+            <select class="form-select" id="timestamp">
+                <option value="chunk" selected>Chunk</option>
+                <option value="word">Word</option>
+            </select>
+        </div>
+        <div class="form-check mb-3">
+            <input class="form-check-input" type="checkbox" id="diarize_audio">
+            <label class="form-check-label" for="diarize_audio">
+                Diarize Audio
+            </label>
+        </div>
+        <button type="submit" class="btn btn-primary">Submit</button>
+    </form>
+
+    <hr class="my-5">
+
+    <div id="outputSection" style="display:none;">
+        <h2>Output</h2>
+        <div id="outputText" class="mb-4"></div>
+        <div id="speakersOutput"></div>
+    </div>
+</div>
+
+<!-- Bootstrap JS and dependencies (Popper) -->
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+
+<script>
+document.getElementById('translationForm').addEventListener('submit', function(event) {
+    event.preventDefault();
+
+    const audioFileInput = document.getElementById('audioFile');
+    const task = document.getElementById('task').value;
+    const language = document.getElementById('language').value;
+    const timestamp = document.getElementById('timestamp').value || 'chunk';
+    const diarizeAudio = document.getElementById('diarize_audio').checked;
+
+    if (audioFileInput.files.length === 0) {
+        alert('Please select an audio file.');
+        return;
+    }
+
+    const audioFile = audioFileInput.files[0];
+    const reader = new FileReader();
+
+    reader.onloadend = function() {
+        const base64Audio = reader.result.split(',')[1];
+
+        const payload = {
+            audio: base64Audio,
+            task: task,
+            language: language,
+            timestamp: timestamp,
+            diarize_audio: diarizeAudio
+        };
+
+        fetch('/', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(payload)
+        })
+        .then(response => response.json())
+        .then(data => {
+            displayOutput(data, diarizeAudio);
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            alert('An error occurred while processing the request.');
+        });
+    };
+
+    reader.readAsDataURL(audioFile);
+});
+
+function displayOutput(data, diarizeAudio) {
+    const outputSection = document.getElementById('outputSection');
+    const outputTextDiv = document.getElementById('outputText');
+    const speakersOutputDiv = document.getElementById('speakersOutput');
+
+    outputSection.style.display = 'block';
+    outputTextDiv.innerHTML = `<p><strong>Transcribed/Translated Text:</strong> ${data.output.text}</p>`;
+
+    if (diarizeAudio && data.output.speakers) {
+        // Merge successive utterances from the same speaker
+        const mergedSpeakers = [];
+        data.output.speakers.forEach(speakerEntry => {
+            const lastEntry = mergedSpeakers[mergedSpeakers.length - 1];
+            if (lastEntry && lastEntry.speaker === speakerEntry.speaker) {
+                lastEntry.text += ' ' + speakerEntry.text;
+            } else {
+                mergedSpeakers.push({...speakerEntry});
+            }
+        });
+
+        let speakersHTML = '<h3>Speakers</h3>';
+        mergedSpeakers.forEach(speaker => {
+            speakersHTML += `
+                <div class="card mb-2">
+                    <div class="card-body">
+                        <h5 class="card-title">Speaker: ${speaker.speaker}</h5>
+                        <p class="card-text">${speaker.text}</p>
+                    </div>
+                </div>
+            `;
+        });
+        speakersOutputDiv.innerHTML = speakersHTML;
+    } else {
+        speakersOutputDiv.innerHTML = '';
+    }
+}
+</script>
+</body>
+</html>

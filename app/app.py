@@ -13,6 +13,7 @@ from fastapi import (
     Request,
 )
 from fastapi.responses import JSONResponse
+from starlette.staticfiles import StaticFiles
 from transformers import pipeline, WhisperFeatureExtractor, WhisperTokenizerFast, WhisperForConditionalGeneration
 from .diarization_pipeline import diarize
 from .schema import TranscribeRequest, WebhookBody
@@ -84,6 +85,7 @@ pipe = pipeline(
 # )
 
 app = FastAPI()
+app.mount("/static", StaticFiles(directory="static"), name="static")
 loop = asyncio.get_event_loop()
 running_tasks = {}
 
