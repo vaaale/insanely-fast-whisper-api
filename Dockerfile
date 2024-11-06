@@ -32,5 +32,4 @@ RUN $POETRY_VENV/bin/pip install -U wheel \
 RUN $POETRY_VENV/bin/pip install flash-attn --no-build-isolation
 
 EXPOSE 9000
-#CMD gunicorn --bind 0.0.0.0:9000 --workers 1 --timeout 0 --log-level debug --capture-output --enable-stdio-inheritance --daemon app.app:app -k uvicorn.workers.UvicornWorker
 CMD gunicorn --bind 0.0.0.0:9000 --workers 1 --timeout 0 --log-level debug --capture-output --enable-stdio-inheritance app.app:app -k uvicorn.workers.UvicornWorker

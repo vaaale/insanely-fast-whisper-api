@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import Literal, List
 
 from pydantic import BaseModel
 
@@ -9,7 +9,7 @@ class WebhookBody(BaseModel):
 
 
 class TranscribeRequest(BaseModel):
-    audio: str
+    audio: List[str] | str
     task: Literal["transcribe", "translate"] = "transcribe"
     language: str | None = None
     batch_size: int = 64

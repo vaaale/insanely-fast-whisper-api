@@ -4,9 +4,12 @@ import os
 import tempfile
 import uuid
 import logging
+from pathlib import Path
+from typing import List
 
 import requests
 import torch
+import uvicorn
 from fastapi import (
     FastAPI,
     HTTPException,
@@ -41,6 +44,7 @@ fly_machine_id = os.environ.get(
 
 local_files_only = False
 model_id = os.environ.get("MODEL_ID", "openai/whisper-large-v3")
+logger.info(f"Loading model: {model_id}")
 
 device = "cuda:0" if torch.cuda.is_available() else "cpu"
 device_count = torch.cuda.device_count()
@@ -91,7 +95,7 @@ running_tasks = {}
 
 
 def process(
-    url: str,
+    urls: str | List[str],
     task: str,
     language: str | None,
     batch_size: int,
@@ -109,7 +113,7 @@ def process(
         }
 
         outputs = pipe(
-            url,
+            urls,
             chunk_length_s=30,
             batch_size=batch_size,
             generate_kwargs=generate_kwargs,
@@ -117,12 +121,22 @@ def process(
         )
 
         if diarize_audio is True:
-            speakers_transcript = diarize(
-                hf_token,
-                url,
-                outputs,
-            )
-            outputs["speakers"] = speakers_transcript
+            if isinstance(urls, list):
+                for url, output in zip(urls, outputs):
+                    speakers_transcript = diarize(
+                        hf_token,
+                        url,
+                        output,
+                    )
+                    output["speakers"] = speakers_transcript
+
+            else:
+                speakers_transcript = diarize(
+                    hf_token,
+                    urls,
+                    outputs,
+                )
+                outputs["speakers"] = speakers_transcript
     except asyncio.CancelledError:
         errorMessage = "Task Cancelled"
     except Exception as e:
@@ -227,6 +241,74 @@ def root(request: TranscribeRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/batch")
+def root(request: TranscribeRequest):
+    if request.diarize_audio is True and hf_token is None:
+        raise HTTPException(status_code=500, detail="Missing Hugging Face Token")
+
+    if request.is_async is True and request.webhook is None:
+        raise HTTPException(
+            status_code=400, detail="Webhook is required for async tasks"
+        )
+
+    task_id = request.managed_task_id if request.managed_task_id is not None else str(uuid.uuid4())
+
+    try:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            files = []
+            base64_files = request.audio
+            for i, b64_file in enumerate(base64_files):
+                audio_data = base64.b64decode(b64_file)
+                tmp_file = Path(tmp_dir) / f"{i}.wav"
+                tmp_file.open("wb").write(audio_data)
+                files.append(str(tmp_file))
+
+            if request.is_async is True:
+                backgroundTask = asyncio.ensure_future(
+                    loop.run_in_executor(
+                        None,
+                        process,
+                        files,
+                        request.task,
+                        request.language,
+                        request.batch_size,
+                        request.timestamp,
+                        request.diarize_audio,
+                        request.webhook,
+                        task_id,
+                    )
+                )
+                running_tasks[task_id] = backgroundTask
+                resp = {
+                    "detail": "Task is being processed in the background",
+                    "status": "processing",
+                    "task_id": task_id,
+                }
+            else:
+                running_tasks[task_id] = None
+                outputs = process(
+                    files,
+                    request.task,
+                    request.language,
+                    request.batch_size,
+                    request.timestamp,
+                    request.diarize_audio,
+                    request.webhook,
+                    task_id,
+                )
+                resp = {
+                    "output": outputs,
+                    "status": "completed",
+                    "task_id": task_id,
+                }
+            if fly_machine_id is not None:
+                resp["fly_machine_id"] = fly_machine_id
+            return resp
+    except Exception as e:
+        logger.info(e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/tasks")
 def tasks():
     return {"tasks": list(running_tasks.keys())}
@@ -261,3 +343,6 @@ def cancel(task_id: str):
         return {"status": "cancelled"}
     else:
         return {"status": "completed", "output": task.result()}
+
+if __name__ == '__main__':
+    uvicorn.run("app:app", host="0.0.0.0", port=9000)
