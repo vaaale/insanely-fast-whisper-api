@@ -82,9 +82,9 @@ pipe = pipeline(
 
 # pipe = pipeline(
 #     "automatic-speech-recognition",
-#     model="openai/whisper-large-v3",
+#     model=model,
 #     torch_dtype=torch.float16,
-#     device="cuda:0",
+#     device=device,
 #     model_kwargs=({"attn_implementation": "flash_attention_2"}),
 # )
 
@@ -189,53 +189,23 @@ def root(request: TranscribeRequest):
         )
 
     task_id = request.managed_task_id if request.managed_task_id is not None else str(uuid.uuid4())
-
     try:
+        base64_filename = request.audio[0]
         with tempfile.NamedTemporaryFile(delete=True) as fp:
-            audio_data = base64.b64decode(request.audio)
+            audio_data = base64.b64decode(base64_filename)
             fp.write(audio_data)
-            url = fp.name
-            if request.is_async is True:
-                backgroundTask = asyncio.ensure_future(
-                    loop.run_in_executor(
-                        None,
-                        process,
-                        url,
-                        request.task,
-                        request.language,
-                        request.batch_size,
-                        request.timestamp,
-                        request.diarize_audio,
-                        request.webhook,
-                        task_id,
-                    )
-                )
-                running_tasks[task_id] = backgroundTask
-                resp = {
-                    "detail": "Task is being processed in the background",
-                    "status": "processing",
-                    "task_id": task_id,
-                }
-            else:
-                running_tasks[task_id] = None
-                outputs = process(
-                    url,
-                    request.task,
-                    request.language,
-                    request.batch_size,
-                    request.timestamp,
-                    request.diarize_audio,
-                    request.webhook,
-                    task_id,
-                )
-                resp = {
-                    "output": outputs,
-                    "status": "completed",
-                    "task_id": task_id,
-                }
-            if fly_machine_id is not None:
-                resp["fly_machine_id"] = fly_machine_id
-            return resp
+            files = [fp.name]
+            return do_transcribe(
+                files,
+                request.is_async,
+                request.task,
+                request.language,
+                request.batch_size,
+                request.timestamp,
+                request.diarize_audio,
+                request.webhook,
+                task_id,
+            )
     except Exception as e:
         logger.info(e)
         raise HTTPException(status_code=500, detail=str(e))
@@ -262,51 +232,73 @@ def root(request: TranscribeRequest):
                 tmp_file = Path(tmp_dir) / f"{i}.wav"
                 tmp_file.open("wb").write(audio_data)
                 files.append(str(tmp_file))
-
-            if request.is_async is True:
-                backgroundTask = asyncio.ensure_future(
-                    loop.run_in_executor(
-                        None,
-                        process,
-                        files,
-                        request.task,
-                        request.language,
-                        request.batch_size,
-                        request.timestamp,
-                        request.diarize_audio,
-                        request.webhook,
-                        task_id,
-                    )
-                )
-                running_tasks[task_id] = backgroundTask
-                resp = {
-                    "detail": "Task is being processed in the background",
-                    "status": "processing",
-                    "task_id": task_id,
-                }
-            else:
-                running_tasks[task_id] = None
-                outputs = process(
-                    files,
-                    request.task,
-                    request.language,
-                    request.batch_size,
-                    request.timestamp,
-                    request.diarize_audio,
-                    request.webhook,
-                    task_id,
-                )
-                resp = {
-                    "output": outputs,
-                    "status": "completed",
-                    "task_id": task_id,
-                }
-            if fly_machine_id is not None:
-                resp["fly_machine_id"] = fly_machine_id
-            return resp
+            return do_transcribe(
+                files,
+                request.is_async,
+                request.task,
+                request.language,
+                request.batch_size,
+                request.timestamp,
+                request.diarize_audio,
+                request.webhook,
+                task_id,
+            )
     except Exception as e:
         logger.info(e)
         raise HTTPException(status_code=500, detail=str(e))
+
+def do_transcribe(
+    files: List[str],
+    is_async: bool,
+    task: str,
+    language: str,
+    batch_size: int,
+    timestamp: str,
+    diarize_audio: bool,
+    webhook: WebhookBody,
+    task_id: str,
+):
+    if is_async is True:
+        backgroundTask = asyncio.ensure_future(
+            loop.run_in_executor(
+                None,
+                process,
+                files,
+                task,
+                language,
+                batch_size,
+                timestamp,
+                diarize_audio,
+                webhook,
+                task_id
+            )
+        )
+        running_tasks[task_id] = backgroundTask
+        resp = {
+            "detail": "Task is being processed in the background",
+            "status": "processing",
+            "task_id": task_id,
+        }
+    else:
+        running_tasks[task_id] = None
+        outputs = process(
+            files,
+            task,
+            language,
+            batch_size,
+            timestamp,
+            diarize_audio,
+            webhook,
+            task_id
+        )
+        resp = {
+            "output": outputs,
+            "status": "completed",
+            "task_id": task_id,
+        }
+    if fly_machine_id is not None:
+        resp["fly_machine_id"] = fly_machine_id
+    return resp
 
 
 @app.get("/tasks")
